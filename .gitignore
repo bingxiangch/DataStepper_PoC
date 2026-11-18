@@ -1,0 +1,24 @@
+# Local environment and secrets
+.venv/
+.env
+
+# Generated POC state
+runs/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+# Frontend dependencies and build output
+frontend/node_modules/
+frontend/dist/
+
+# Downloaded/working datasets (keep the small CSV files locally or provide them via OLIST_DATA_DIR)
+data/olist/*.csv
+data/olist_mini/*.csv
+data/olist_mini/manifest.json
+
+# Separate run state for the mini test dataset
+runs_mini/
+
+# OS files
+.DS_Store

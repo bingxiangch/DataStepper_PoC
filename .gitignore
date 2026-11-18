@@ -16,6 +16,7 @@ frontend/dist/
 data/olist/*.csv
 data/olist_mini/*.csv
 data/olist_mini/manifest.json
+data/olist_csv.zip
 
 # Separate run state for the mini test dataset
 runs_mini/

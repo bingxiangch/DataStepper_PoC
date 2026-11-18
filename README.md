@@ -15,6 +15,11 @@ copy — there is no production database access.
 
 ## Run it
 
+The six Olist CSVs are not stored in the Git history. Download
+[`olist_csv.zip`](https://github.com/bingxiangch/DataStepper_PoC/releases/download/data-v1/olist_csv.zip)
+from the [data-v1 release](https://github.com/bingxiangch/DataStepper_PoC/releases/tag/data-v1)
+and extract it so the files are in `data/olist/`.
+
 Requirements: Python 3.11+, Node.js 20+, and the six Olist CSVs in `data/olist/`.
 
 ```bash

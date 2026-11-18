@@ -1,7 +1,13 @@
 # Olist data
 
-Place the six CSV files from the *Brazilian E-Commerce Public Dataset by Olist*
-(Kaggle) in `data/olist/`:
+## Download
+
+The CSV files are not stored in the Git history. Download `olist_csv.zip` from
+the [data-v1 release](https://github.com/bingxiangch/DataStepper_PoC/releases/tag/data-v1)
+and extract it so the files are in `data/olist/`.
+
+Alternatively, download the *Brazilian E-Commerce Public Dataset by Olist*
+(Kaggle) and place these six files in `data/olist/`:
 
 - `olist_orders_dataset.csv`
 - `olist_customers_dataset.csv`
@@ -58,4 +64,6 @@ and manifest are ignored by git.
 
 The debugger reads the CSVs directly and never modifies them. The only writable
 data store is the disposable per-run SQLite sandbox under `runs/<run_id>/`.
-The CSV files are ignored by git and are not redistributed with this prototype.
+The CSV files are not committed to the Git history; they are distributed as the
+`olist_csv.zip` release asset under the Olist dataset's CC BY-NC-SA 4.0
+license. Local CSV copies remain ignored by git.

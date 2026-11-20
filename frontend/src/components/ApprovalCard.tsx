@@ -31,13 +31,15 @@ export function ApprovalCard({
   const [feedbackSent, setFeedbackSent] = useState(false);
   const matched = approval.matched_breakpoint;
   const matchedChips = matched
-    ? matched.kind === "filter_excludes" && matched.condition
-      ? [
-          "FILTER",
-          matched.condition.column.toUpperCase(),
-          `EXCLUDES ${matched.condition.value.toUpperCase()}`,
-        ]
-      : matched.operation_types.map((operation) => operation.toUpperCase())
+    ? matched.kind === "data_effect" && matched.condition?.metric
+      ? ["DATA EFFECT", "PAYMENT COPIES", `> ${matched.condition.threshold ?? 1}`]
+      : matched.kind === "filter_excludes" && matched.condition
+        ? [
+            "FILTER",
+            matched.condition.column.toUpperCase(),
+            `EXCLUDES ${matched.condition.value.toUpperCase()}`,
+          ]
+        : matched.operation_types.map((operation) => operation.toUpperCase())
     : [];
 
   useEffect(() => {

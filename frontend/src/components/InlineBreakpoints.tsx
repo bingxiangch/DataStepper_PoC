@@ -15,6 +15,13 @@ function operationLabel(operation: BreakpointOperation): string {
 }
 
 function ruleChips(rule: BreakpointRule): { key: string; label: string }[] {
+  if (rule.kind === "data_effect" && rule.condition?.metric) {
+    return [
+      { key: "data-effect", label: "DATA EFFECT" },
+      { key: "payment", label: "PAYMENT COPIES" },
+      { key: "threshold", label: `> ${rule.condition.threshold ?? 1}` },
+    ];
+  }
   if (rule.kind === "filter_excludes" && rule.condition) {
     return [
       { key: "filter", label: "FILTER" },
@@ -116,7 +123,7 @@ export function InlineBreakpoints({
     <section
       className="card mb-3 px-3 py-2.5 sm:px-4"
       aria-labelledby="breakpoints-heading"
-      title="Breakpoints pause before DELETE/DROP tools or filters that exclude cancelled orders. The mandatory approval gate remains in force."
+      title="Breakpoints pause before DELETE/DROP tools, filters that exclude cancelled orders, or joins that repeat payment records beyond a fixed threshold. The mandatory approval gate remains in force."
     >
       <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
         <div className="flex shrink-0 items-center gap-1.5">
@@ -244,9 +251,9 @@ export function InlineBreakpoints({
         </ul>
       ) : (
         <p className="mt-1 text-[9.5px] leading-snug text-faint">
-          No breakpoint set. Try “Pause before DELETE or DROP operations.” or “Pause if the
-          agent excludes cancelled orders from the analysis.” Destructive writes still require
-          mandatory approval.
+          No breakpoint set. Try “Pause before DELETE or DROP operations.”, “Pause if the
+          agent excludes cancelled orders from the analysis.”, or “Pause if a payment record
+          is repeated more than 2 times.” Destructive writes still require mandatory approval.
         </p>
       )}
     </section>

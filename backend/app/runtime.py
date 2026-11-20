@@ -17,7 +17,11 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .artifacts import ArtifactStore, EventLog, RunRepository
-from .breakpoints import interpret_breakpoint, matching_breakpoint
+from .breakpoints import (
+    interpret_breakpoint,
+    matching_breakpoint,
+    matching_data_effect_breakpoint,
+)
 from .config import LIVE_AVAILABLE, RUNS_DIR, live_status
 from .dataset import OlistDataset
 from .llm import (
@@ -495,7 +499,7 @@ class DebuggerService:
         metrics = dict(run.metrics)
         preview: list[dict[str, Any]] = []
         for op in step.operations:
-            must_pause, _ = self._operation_gate(run, op)
+            must_pause, _, _ = self._operation_gate(run, op, frames=frames)
             if op.status != "pending" or must_pause:
                 continue
             try:
@@ -785,8 +789,11 @@ class DebuggerService:
                     report.step_links.append(
                         {"step_id": metric.source_step_id, "title": step_titles.get(metric.source_step_id, "")}
                     )
-            if run.approvals:
-                decision = run.approvals[-1]
+            decision = next(
+                (approval for approval in reversed(run.approvals) if approval.mandatory),
+                None,
+            )
+            if decision is not None:
                 if decision.status == "rejected":
                     prefix = "The destructive operation was rejected at the approval gate; no rows were changed. "
                     note = f"Approval {decision.id} was rejected: {decision.reason or 'no reason recorded'}."
@@ -807,15 +814,54 @@ class DebuggerService:
             outputs=output_ids,
         )
 
-    def _operation_gate(self, run: Run, op: Operation) -> tuple[bool, Optional[BreakpointRule]]:
-        """Return whether the operation must pause and the matching user rule.
+    def _preview_join_effect(self, op: Operation, frames: dict[str, Any]) -> dict[str, Any]:
+        """Measure the fixed join effect without writing or executing the step.
+
+        This is a read-only preview used only when a data-effect watchpoint is
+        active. It never executes arbitrary SQL or model-supplied code.
+        """
+        if op.tool != "join_tables":
+            return {}
+        try:
+            result = execute_tool(
+                op.tool,
+                op.args,
+                frames,
+                self.dataset,
+                preview=True,
+            )
+        except ToolError:
+            return {}
+        for evidence in result.evidence:
+            if evidence.kind == "join":
+                return dict(evidence.details)
+        return {}
+
+    def _operation_gate(
+        self,
+        run: Run,
+        op: Operation,
+        frames: Optional[dict[str, Any]] = None,
+    ) -> tuple[bool, Optional[BreakpointRule], Optional[dict[str, Any]]]:
+        """Return whether the operation must pause, the matching rule, and its effect.
 
         The mandatory destructive-write policy is always checked. A configured
         breakpoint can add a gate but can never remove or weaken the mandatory
-        one.
+        one. Data-effect watchpoints are evaluated against a read-only preview
+        of the proposed join.
         """
         matched = matching_breakpoint(run, op)
-        return op.tool in REQUIRES_APPROVAL or matched is not None, matched
+        effect: Optional[dict[str, Any]] = None
+        if (
+            matched is None
+            and op.tool == "join_tables"
+            and any(rule.active and rule.kind == "data_effect" for rule in run.breakpoints)
+        ):
+            effect = self._preview_join_effect(op, frames if frames is not None else self._frames(run))
+            matched = matching_data_effect_breakpoint(run, op, effect)
+            if matched is None:
+                effect = None
+        return op.tool in REQUIRES_APPROVAL or matched is not None, matched, effect
 
     def _pause_for_approval(
         self,
@@ -823,6 +869,7 @@ class DebuggerService:
         step: WorkflowStep,
         op: Operation,
         matched_breakpoint: Optional[BreakpointRule] = None,
+        effect: Optional[dict[str, Any]] = None,
     ) -> None:
         mandatory = op.tool in REQUIRES_APPROVAL
         facts: list[Fact]
@@ -848,13 +895,30 @@ class DebuggerService:
             facts = result.evidence[0].facts if result.evidence else []
             summary = result.evidence[0].summary if result.evidence else "Risky write requires approval."
         else:
-            # Breakpoint-only gates never call the tool. There is no generic
-            # preview contract for arbitrary tools, and a pause must not execute.
+            # Breakpoint-only gates never call the tool during the pause. A
+            # data-effect watchpoint may reuse the read-only preview computed by
+            # the gate; no operation has executed.
             facts = [
                 Fact(label="Operation", value=op.tool),
                 Fact(label="Executed", value="No"),
             ]
             summary = f"Breakpoint matched before {op.tool}; the operation has not executed."
+            if effect and matched_breakpoint and matched_breakpoint.condition:
+                condition = matched_breakpoint.condition
+                value = effect.get(condition.metric) if condition.metric else None
+                threshold = condition.threshold if condition.threshold is not None else 1
+                if value is not None:
+                    facts.extend(
+                        [
+                            Fact(label="Preview max copies / payment", value=f"{int(value):,}"),
+                            Fact(label="Watchpoint threshold", value=f"> {threshold}"),
+                        ]
+                    )
+                    summary = (
+                        f"Data-effect watchpoint matched before {op.tool}: the preview "
+                        f"estimates up to {int(value):,} copies per payment record "
+                        f"(threshold > {threshold}). The operation has not executed."
+                    )
 
         approval = ApprovalRequest(
             id=_new_id("approval"),
@@ -944,9 +1008,9 @@ class DebuggerService:
             return "step_completed"
         op_index = step.operations.index(pending[0])
         op = pending[0]
-        must_pause, matched = self._operation_gate(run, op)
+        must_pause, matched, effect = self._operation_gate(run, op)
         if must_pause:
-            self._pause_for_approval(run, step, op, matched)
+            self._pause_for_approval(run, step, op, matched, effect)
             return "awaiting_approval"
         self._execute_operation_now(run, step, op)
         more = [o for o in step.operations if o.status == "pending"]
@@ -967,9 +1031,9 @@ class DebuggerService:
                 self._complete_step(run, step, keep_running=keep_running)
                 return "step_completed"
             op = pending[0]
-            must_pause, matched = self._operation_gate(run, op)
+            must_pause, matched, effect = self._operation_gate(run, op)
             if must_pause:
-                self._pause_for_approval(run, step, op, matched)
+                self._pause_for_approval(run, step, op, matched, effect)
                 return "awaiting_approval"
             self._execute_operation_now(run, step, op)
             if pause_check and pause_check():
@@ -1194,10 +1258,10 @@ class DebuggerService:
                     self._persist(run)
                     continue
                 op = pending[0]
-                must_pause, matched = self._operation_gate(run, op)
+                must_pause, matched, effect = self._operation_gate(run, op)
                 if must_pause:
                     try:
-                        self._pause_for_approval(run, step, op, matched)
+                        self._pause_for_approval(run, step, op, matched, effect)
                     except DebuggerError:
                         pass
                     self._pause_events.pop(run_id, None)
@@ -1252,7 +1316,12 @@ class DebuggerService:
                 run.cursor_op = step.operations.index(more[0])
             else:
                 self._complete_step(run, step)
-            self._event(run, "approval_granted", "Developer approved the destructive operation; it executed exactly once.", step=step.title, operation=op.id)
+            message = (
+                "Developer approved the destructive operation; it executed exactly once."
+                if approval.mandatory
+                else "Developer approved the breakpoint-gated operation; it executed exactly once."
+            )
+            self._event(run, "approval_granted", message, step=step.title, operation=op.id)
             self._record_command(run, command_id)
             self._persist(run)
             return self._view(run)
@@ -1284,7 +1353,11 @@ class DebuggerService:
                     kind="approval_rejected",
                     status="OBSERVED",
                     label=rejected_label,
-                    summary="Developer rejected the destructive operation. No rows were changed.",
+                    summary=(
+                        "Developer rejected the destructive operation. No rows were changed."
+                        if approval.mandatory
+                        else "Developer rejected the breakpoint-gated operation. It was not executed."
+                    ),
                     facts=[Fact(label="Executed", value="No"), Fact(label="Reason", value=reason or "Rejected by developer")],
                     details=rejected_details,
                 )
@@ -1294,7 +1367,12 @@ class DebuggerService:
             approval.reason = reason or "Rejected by developer"
             run.approvals.append(approval)
             run.approval = None
-            self._event(run, "approval_rejected", "Developer rejected the destructive operation; it was not executed.", step=step.title, operation=op.id)
+            message = (
+                "Developer rejected the destructive operation; it was not executed."
+                if approval.mandatory
+                else "Developer rejected the breakpoint-gated operation; it was not executed."
+            )
+            self._event(run, "approval_rejected", message, step=step.title, operation=op.id)
             self._complete_step(run, step, status="skipped")
             self._record_command(run, command_id)
             self._persist(run)
@@ -1805,7 +1883,7 @@ class DebuggerService:
         try:
             for step in steps[affected:]:
                 for op in step.operations:
-                    must_pause, _ = self._operation_gate(run, op)
+                    must_pause, _, _ = self._operation_gate(run, op, frames=frames)
                     if must_pause:
                         continue
                     try:
@@ -2073,9 +2151,9 @@ class DebuggerService:
                     self._persist(run)
                     continue
                 op = pending[0]
-                must_pause, matched = self._operation_gate(run, op)
+                must_pause, matched, effect = self._operation_gate(run, op)
                 if must_pause:
-                    self._pause_for_approval(run, step, op, matched)
+                    self._pause_for_approval(run, step, op, matched, effect)
                     self._persist(run)
                     return
                 try:

@@ -176,11 +176,13 @@ export interface StepView {
 
 export type BreakpointOperation = "delete" | "drop";
 
-export type BreakpointKind = "operation" | "filter_excludes";
+export type BreakpointKind = "operation" | "filter_excludes" | "data_effect";
 
 export interface BreakpointCondition {
   column: "order_status";
   value: "canceled";
+  metric?: "max_copies_per_payment_record" | null;
+  threshold?: number | null;
 }
 
 export interface BreakpointRule {

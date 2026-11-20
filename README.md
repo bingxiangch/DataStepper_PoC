@@ -11,7 +11,7 @@ copy — there is no production database access.
 
 ![Proof-of-concept interface: breakpoints, step inspection with Data Effects, and a pending revision](image/PoC.png)
 
-![Framework architecture and interactive debugging workflow](image/workflow.png)
+![Framework architecture and interactive debugging workflow](image/workflow.jpg)
 
 ## Run it
 
@@ -59,3 +59,5 @@ without one.
 5. Add a breakpoint in the **Breakpoints** strip, for example:
    - `Pause before DELETE or DROP operations.`
    - `Pause if the agent excludes cancelled orders from the analysis.`
+   - `Pause if a payment record is repeated more than 2 times.` (checks a
+     read-only join preview; the threshold defaults to 1)

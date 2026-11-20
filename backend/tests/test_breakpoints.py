@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import pytest
 
-from backend.app.breakpoints import interpret_breakpoint, matching_breakpoint
+from backend.app.breakpoints import (
+    interpret_breakpoint,
+    matching_breakpoint,
+    matching_data_effect_breakpoint,
+)
 from backend.app.models import BreakpointCondition, BreakpointRule, Operation, Run
 from backend.app.runtime import DebuggerError
 
@@ -79,6 +83,27 @@ def test_breakpoint_parser_translates_cancelled_order_exclusion():
     assert filtered_out.rule.kind == "filter_excludes"
 
 
+def test_breakpoint_parser_translates_payment_repetition():
+    text = "Pause if a payment record is repeated more than 2 times."
+    result = interpret_breakpoint(text)
+    assert result.supported is True
+    assert result.rule is not None
+    assert result.rule.kind == "data_effect"
+    assert result.rule.operation_types == []
+    assert result.rule.condition is not None
+    assert result.rule.condition.metric == "max_copies_per_payment_record"
+    assert result.rule.condition.threshold == 2
+    assert result.rule.label == "Pause when a payment record is repeated more than 2 times."
+    assert "payment" in result.message.lower()
+
+    default = interpret_breakpoint("Pause when payment records are duplicated by the join.")
+    assert default.supported is True
+    assert default.rule is not None
+    assert default.rule.kind == "data_effect"
+    assert default.rule.condition is not None
+    assert default.rule.condition.threshold == 1
+
+
 @pytest.mark.parametrize(
     "text",
     [
@@ -130,6 +155,45 @@ def test_matching_breakpoint_is_deterministic_and_supports_drop():
 
     run.breakpoints[0].active = False
     assert matching_breakpoint(run, drop_op) is None
+
+
+def test_data_effect_breakpoint_matches_join_preview_threshold():
+    run = Run(
+        id="run_effect",
+        task="test",
+        mode="scripted",
+        dataset="olist",
+        scenario_id="category_sales",
+        planner_label="test",
+        breakpoints=[
+            BreakpointRule(
+                id="bp_effect",
+                natural_language="Pause if a payment record is repeated.",
+                label="Pause when a payment record is repeated.",
+                kind="data_effect",
+                condition=BreakpointCondition(
+                    metric="max_copies_per_payment_record",
+                    threshold=2,
+                ),
+            )
+        ],
+    )
+    join_op = Operation(
+        id="op_join",
+        step_id="step_3",
+        tool="join_tables",
+        args={"left": "order_items", "right": "order_payments", "output": "joined"},
+    )
+    details = {"max_copies_per_payment_record": 3}
+    assert matching_data_effect_breakpoint(run, join_op, details).id == "bp_effect"
+    assert matching_data_effect_breakpoint(run, join_op, {"max_copies_per_payment_record": 2}) is None
+    assert matching_data_effect_breakpoint(run, join_op, {"max_copies_per_payment_record": 1}) is None
+    assert matching_data_effect_breakpoint(run, join_op, {}) is None
+    non_join = Operation(id="op_filter", step_id="step_3", tool="filter_rows")
+    assert matching_data_effect_breakpoint(run, non_join, details) is None
+
+    run.breakpoints[0].active = False
+    assert matching_data_effect_breakpoint(run, join_op, details) is None
 
 
 def _filter_operation(where, tool="filter_rows"):
@@ -553,3 +617,42 @@ def test_mandatory_gate_still_applies_without_breakpoints(service):
         service.continue_run(run_id)
     assert caught.value.code == "approval_pending"
     assert _sandbox_counts(service, run_id) == (99441, 625)
+
+
+def test_data_effect_watchpoint_pauses_before_payment_join(service):
+    view = service.create_run(
+        "Show monthly product category sales from delivered orders.",
+        "scripted",
+    )
+    run_id = view["id"]
+    assert view["scenario_id"] == "category_sales"
+    view = service.add_breakpoint(run_id, "Pause if a payment record is repeated.")
+
+    for _ in range(12):
+        if view["status"] in {"awaiting_approval", "completed", "failed"}:
+            break
+        view = service.step_over(run_id)
+
+    assert view["status"] == "awaiting_approval"
+    approval = view["approval"]
+    assert approval is not None
+    assert approval["tool"] == "join_tables"
+    assert approval["mandatory"] is False
+    assert approval["matched_breakpoint"]["kind"] == "data_effect"
+    assert "order_payments" in str(approval["args"])
+    facts = {fact["label"]: fact["value"] for fact in approval["facts"]}
+    assert facts["Executed"] == "No"
+    assert int(facts["Preview max copies / payment"].replace(",", "")) > 1
+    assert facts["Watchpoint threshold"] == "> 1"
+
+    approved = service.approve(run_id)
+    assert approved["approval"] is None
+    payment_joins = [
+        operation
+        for step in approved["steps"]
+        for operation in step["operations"]
+        if operation["tool"] == "join_tables"
+        and "order_payments" in str(operation["args"])
+    ]
+    assert payment_joins
+    assert payment_joins[0]["status"] == "completed"

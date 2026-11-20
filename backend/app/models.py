@@ -9,7 +9,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_serializer
 
 
 def utcnow() -> str:
@@ -203,17 +203,31 @@ class Checkpoint(BaseModel):
 
 
 class BreakpointCondition(BaseModel):
-    """A fixed exclusion predicate, not an arbitrary SQL expression."""
+    """A fixed predicate or join-effect threshold, not an arbitrary SQL expression."""
 
     column: Literal["order_status"] = "order_status"
     value: Literal["canceled"] = "canceled"
+    # Data-effect watchpoints use one measured join effect and a fixed threshold.
+    # The condition is evaluated against a read-only preview, never arbitrary SQL.
+    metric: Optional[Literal["max_copies_per_payment_record"]] = None
+    threshold: Optional[int] = None
+
+    @model_serializer
+    def _serialize(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"column": self.column, "value": self.value}
+        if self.metric is not None:
+            data["metric"] = self.metric
+        if self.threshold is not None:
+            data["threshold"] = self.threshold
+        return data
 
 
 class BreakpointRule(BaseModel):
     """A deterministic, user-configured before-execution pause.
 
-    Two fixed kinds are supported: a pause before DELETE/DROP tools, and a pause
-    before a filter operation whose predicate excludes cancelled orders. The
+    Three fixed kinds are supported: a pause before DELETE/DROP tools, a pause
+    before a filter operation whose predicate excludes cancelled orders, and a
+    pause when a join preview exceeds a fixed payment-repetition threshold. The
     rule carries no arbitrary SQL or free-form execution condition.
     """
 
@@ -221,7 +235,7 @@ class BreakpointRule(BaseModel):
     natural_language: str
     label: str
     operation_types: list[Literal["delete", "drop"]] = Field(default_factory=list)
-    kind: Literal["operation", "filter_excludes"] = "operation"
+    kind: Literal["operation", "filter_excludes", "data_effect"] = "operation"
     condition: Optional[BreakpointCondition] = None
     phase: Literal["before"] = "before"
     active: bool = True
